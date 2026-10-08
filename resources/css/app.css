@@ -1,0 +1,183 @@
+@import 'tailwindcss';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+@source '../../app/Enums/*.php';
+
+@theme {
+    --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-mono: 'JetBrains Mono', ui-monospace, 'Courier New', monospace;
+
+    /* Industrial palette shared with the main Power Installation website: deep navy + safety orange */
+    --color-navy-950: #001019;
+    --color-navy-900: #001a2e;
+    --color-navy-800: #002b45;
+    --color-navy-700: #003b5c;
+    --color-accent: #f7941d;
+    --color-accent-hover: #c46a00;
+    --color-slate: #5d6d7e;
+    --color-steel: #f5f7fa;
+    --color-line: #e4e9f0;
+}
+
+@layer components {
+    .btn {
+        @apply inline-flex items-center justify-center gap-2 rounded px-6 py-3 text-sm font-semibold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60;
+    }
+
+    .btn-primary {
+        @apply bg-accent text-white shadow-[0_10px_40px_-10px_color-mix(in_srgb,var(--color-accent)_40%,transparent)] hover:brightness-95;
+    }
+
+    .btn-outline-light {
+        @apply border border-white/30 text-white hover:border-white hover:bg-white/10;
+    }
+
+    .btn-outline {
+        @apply border border-navy-800 text-navy-800 hover:bg-navy-800 hover:text-white;
+    }
+
+    .btn-ghost {
+        @apply text-slate hover:bg-steel hover:text-navy-800;
+    }
+
+    .eyebrow {
+        @apply font-mono text-xs font-semibold tracking-[0.2em] text-accent uppercase;
+    }
+
+    .form-input {
+        @apply w-full rounded border border-line bg-white px-4 py-3 text-navy-800 placeholder:text-slate/60 focus:border-accent focus:ring-2 focus:ring-accent/20 focus:outline-none aria-invalid:border-red-500;
+    }
+
+    .card {
+        @apply rounded-lg border border-line bg-white;
+    }
+
+    .badge {
+        @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap;
+    }
+
+    .bg-grid {
+        background-image:
+            linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+        background-size: 80px 80px;
+    }
+}
+
+/* Reveal on scroll (enabled by resources/js/app.js) */
+.js [data-reveal] {
+    opacity: 0;
+    transform: translateY(24px);
+    transition:
+        opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+        transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.js [data-reveal].is-visible {
+    opacity: 1;
+    transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .js [data-reveal] {
+        opacity: 1;
+        transform: none;
+        transition: none;
+    }
+}
+
+/* Knowledge base articles (rich text or Markdown) */
+.prose-content {
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+}
+
+.prose-content > * + * {
+    margin-top: 1em;
+}
+
+.prose-content :is(h1, h2, h3, h4) {
+    margin-top: 1.5em;
+    font-weight: 700;
+    color: var(--color-navy-800);
+    line-height: 1.3;
+}
+
+.prose-content h1,
+.prose-content h2 {
+    font-size: 1.5rem;
+}
+
+.prose-content h3 {
+    font-size: 1.25rem;
+}
+
+.prose-content a {
+    color: var(--color-accent-hover);
+    text-decoration: underline;
+}
+
+.prose-content :is(ul, ol) {
+    padding-left: 1.5em;
+}
+
+.prose-content ul {
+    list-style: disc;
+}
+
+.prose-content ol {
+    list-style: decimal;
+}
+
+.prose-content li + li {
+    margin-top: 0.25em;
+}
+
+.prose-content blockquote {
+    border-left: 4px solid var(--color-accent);
+    padding-left: 1em;
+    color: var(--color-slate);
+}
+
+.prose-content img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.5rem;
+}
+
+.prose-content :is(code, pre) {
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    background: var(--color-steel);
+    border-radius: 0.25rem;
+}
+
+.prose-content code {
+    padding: 0.1em 0.35em;
+}
+
+.prose-content pre {
+    padding: 1em;
+    overflow-x: auto;
+}
+
+.prose-content pre code {
+    padding: 0;
+}
+
+.prose-content table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.prose-content :is(th, td) {
+    border: 1px solid var(--color-line);
+    padding: 0.5em 0.75em;
+    text-align: left;
+}
+
+.prose-content hr {
+    border-color: var(--color-line);
+}
