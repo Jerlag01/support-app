@@ -453,3 +453,38 @@ Logs: `storage/logs/laravel.log` (application), `/var/log/nginx/support-app.erro
 - [ ] Two-step verification: set up the authenticator app on the first admin account, log out and back in with a code
 - [ ] `APP_ENV=production` and `APP_DEBUG=false` in `.env`
 - [ ] Backups of the database, `storage/app/private`, `storage/app/public` and `.env` are scheduled
+
+## 18. Updating from git (admin panel)
+
+Admins can update the installation from its GitHub repository under **System update** in the admin panel.
+That page shows the installed commit, whether GitHub has a newer one, and the log of the last update.
+
+PHP-FPM may not write the code directory, so the page only *queues* the update.
+The Laravel scheduler, running from cron as `www-data`, performs it. Add this cron line once:
+
+```bash
+sudo crontab -u www-data -e
+# add:
+* * * * * cd /path/to/app && php8.4 artisan schedule:run >> /dev/null 2>&1
+```
+
+The page reports the scheduler as "Running" once cron works.
+
+`php8.4 artisan app:update` runs these steps:
+1. Refuse if tracked files were changed on the server.
+2. `git fetch`, then `artisan down`, then `git merge --ff-only`.
+3. `composer install` (`--no-dev` in production) and publish the Livewire assets.
+4. `npm ci` / `npm run build` when the frontend changed.
+5. `migrate --force`.
+6. `optimize` + `filament:optimize` in production, or clear the caches in development.
+7. `artisan up`.
+
+You can also run it by hand:
+
+```bash
+sudo -u www-data php8.4 artisan app:update --check   # read-only: is there an update?
+sudo -u www-data php8.4 artisan app:update           # update now
+```
+
+Never run it as root: pulled files would become root-owned. If needed, run `chown -R www-data:www-data .` first.
+Optional `.env` keys: `UPDATER_BRANCH`, `UPDATER_REMOTE`, `UPDATER_COMPOSER`, `UPDATER_NPM`.
