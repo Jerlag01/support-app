@@ -87,18 +87,20 @@ If the database runs on another server, create the user as `'support_app'@'<web 
 
 ## 4. Get the code
 
-The app lives in the `support-app` folder of the repository.
+The app has its own repository: **https://github.com/Jerlag01/support-app** (branch `main`).
 
 ```bash
 mkdir -p /var/www
-cd /var/www
-git clone https://github.com/JLTechologies/Stock-Rewrite.git stock-rewrite
-ln -s /var/www/stock-rewrite/support-app /var/www/support-app     # or move/copy the folder
+git clone https://github.com/Jerlag01/support-app.git /var/www/support-app
+cd /var/www/support-app
+git config --global --add safe.directory /var/www/support-app    # lets root run git in this folder later (it is owned by www-data)
 ```
 
-The repository is private: use a GitHub deploy key or a personal access token for the clone.
+The repository is private: use a GitHub deploy key (read-only, recommended for a server) or a personal access token for the clone.
 
 Not in git (and therefore created during the install): `.env`, `vendor/`, `node_modules/`, `public/build/`, `public/storage` and everything stored in `storage/`.
+
+> Older installs cloned the combined repository `JLTechologies/Stock-Rewrite` and linked its `support-app` folder. To move such an install to the new repository, see section 14.4.
 
 ---
 
@@ -212,7 +214,7 @@ Agents and clients are normally added later in the panels.
 The web server (PHP-FPM runs as `www-data`) must be able to write to `storage/` and `bootstrap/cache/`. Ticket attachments are stored in `storage/app/private`:
 
 ```bash
-chown -R www-data:www-data /var/www/stock-rewrite/support-app
+chown -R www-data:www-data /var/www/support-app
 find /var/www/support-app/storage /var/www/support-app/bootstrap/cache -type d -exec chmod 775 {} \;
 ```
 
@@ -327,7 +329,7 @@ Leave the osTicket files and database untouched until you are sure you no longer
 cd /var/www/support-app
 php8.4 artisan optimize          # config, routes, views, events cache
 php8.4 artisan filament:optimize # Filament component + icon cache
-chown -R www-data:www-data /var/www/stock-rewrite/support-app
+chown -R www-data:www-data /var/www/support-app
 systemctl restart php8.4-fpm     # clears OPcache
 ```
 
@@ -388,24 +390,71 @@ Then continue with sections 8–11. Change `APP_URL` if the domain changes.
 
 ---
 
-## 14. Updating to a new version
+## 14. Updating to a new release
+
+New releases are published on the `main` branch of https://github.com/Jerlag01/support-app. A release can also carry a tag (for example `v1.2.0`); then you can install exactly that release.
+
+Before every update:
+- Back up the database and the attachments before an update (see section 15).
+- See what the update brings: `cd /var/www/support-app && git fetch --tags origin && git log --oneline HEAD..origin/main`.
+
+### 14.1 From the admin panel (recommended)
+
+Open **System update** in the admin panel and click the update button. It needs the scheduler cron; see section 18 for how it works and what it runs.
+
+### 14.2 By hand
 
 ```bash
-cd /var/www/stock-rewrite
-php8.4 /var/www/support-app/artisan down        # maintenance page
-git pull
-cd support-app
+cd /var/www/support-app
+git rev-parse --short HEAD                      # note the current version, for a rollback
+php8.4 artisan down                             # maintenance page
+git fetch --tags origin
+git merge --ff-only origin/main                 # latest release
+#   or, for one tagged release instead:  git checkout v1.2.0
 composer install --no-dev --optimize-autoloader --no-interaction
 npm ci && npm run build
 php8.4 artisan vendor:publish --tag=livewire:assets --force
 php8.4 artisan migrate --force
 php8.4 artisan optimize && php8.4 artisan filament:optimize
-chown -R www-data:www-data /var/www/stock-rewrite/support-app
+chown -R www-data:www-data /var/www/support-app
+systemctl restart php8.4-fpm                    # clears OPcache
+php8.4 artisan up
+```
+
+`git merge --ff-only` stops when files were changed on the server itself (`git status` shows them). Undo those changes (`git checkout -- <file>`) or move them into the repository first; never edit code directly on the server.
+
+### 14.3 Going back to the previous version
+
+```bash
+cd /var/www/support-app
+php8.4 artisan down
+git checkout <the version noted before the update>
+composer install --no-dev --optimize-autoloader --no-interaction
+npm ci && npm run build
+php8.4 artisan optimize && php8.4 artisan filament:optimize
+chown -R www-data:www-data /var/www/support-app
 systemctl restart php8.4-fpm
 php8.4 artisan up
 ```
 
-Back up the database and the attachments before an update (see section 15).
+When the update ran new migrations, restore the database backup as well. Afterwards `git checkout main` brings the folder back on the branch for the next update.
+
+### 14.4 Moving an old install to the new repository
+
+For installs that still come from `JLTechologies/Stock-Rewrite`:
+
+```bash
+cd /var/www
+php8.4 support-app/artisan down
+git clone https://github.com/Jerlag01/support-app.git support-app-new
+cp support-app/.env support-app-new/.env                                      # keeps APP_KEY and the database settings
+cp -a support-app/storage/app/. support-app-new/storage/app/                  # uploads
+mv support-app support-app-old && mv support-app-new support-app                          # replaces the symlink/folder
+cd support-app
+git config --global --add safe.directory /var/www/support-app
+```
+
+Then run section 6 without `key:generate` and without `db:seed`, then sections 8 and 11. The nginx root (`/var/www/support-app/public`) stays the same. When everything works, remove `/var/www/support-app-old`.
 
 ---
 
@@ -465,7 +514,7 @@ The Laravel scheduler, running from cron as `www-data`, performs it. Add this cr
 ```bash
 sudo crontab -u www-data -e
 # add:
-* * * * * cd /path/to/app && php8.4 artisan schedule:run >> /dev/null 2>&1
+* * * * * cd /var/www/support-app && php8.4 artisan schedule:run >> /dev/null 2>&1
 ```
 
 The page reports the scheduler as "Running" once cron works.
