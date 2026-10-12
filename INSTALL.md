@@ -7,7 +7,7 @@ How to install the helpdesk on a new server, from an empty machine to a working 
 - the admin panel at `/admin`.
 
 - **Stack:** Laravel 13, Filament 5, PHP 8.4, MySQL/MariaDB, nginx, Vite/Tailwind for the front-end build.
-- **Example names in this guide:** domain `support.example.be`, install path `/var/www/support-app`, database `support_app`, database user `support_app`. Replace them with your own values.
+- **Example names in this guide:** domain `support.example.be`, install path `/usr/share/nginx/html/support-app`, database `support_app`, database user `support_app`. Replace them with your own values.
 - All commands run as `root` unless they start with `sudo -u www-data`.
 
 > **Do not install this on top of an existing osTicket.** It uses its own database and its own folder. If osTicket currently runs on the target domain, install this next to it on a test domain first and switch the domain over afterwards (section 10).
@@ -90,10 +90,10 @@ If the database runs on another server, create the user as `'support_app'@'<web 
 The app has its own repository: **https://github.com/Jerlag01/support-app** (branch `main`).
 
 ```bash
-mkdir -p /var/www
-git clone https://github.com/Jerlag01/support-app.git /var/www/support-app
-cd /var/www/support-app
-git config --global --add safe.directory /var/www/support-app    # lets root run git in this folder later (it is owned by www-data)
+mkdir -p /usr/share/nginx/html
+git clone https://github.com/Jerlag01/support-app.git /usr/share/nginx/html/support-app
+cd /usr/share/nginx/html/support-app
+git config --global --add safe.directory /usr/share/nginx/html/support-app    # lets root run git in this folder later (it is owned by www-data)
 ```
 
 The repository is private: use a GitHub deploy key (read-only, recommended for a server) or a personal access token for the clone.
@@ -107,7 +107,7 @@ Not in git (and therefore created during the install): `.env`, `vendor/`, `node_
 ## 5. Configuration (`.env`)
 
 ```bash
-cd /var/www/support-app
+cd /usr/share/nginx/html/support-app
 cp .env.example .env
 nano .env
 ```
@@ -160,7 +160,7 @@ Notes:
 ## 6. Install the application
 
 ```bash
-cd /var/www/support-app
+cd /usr/share/nginx/html/support-app
 
 # PHP dependencies (production: without dev tools)
 composer install --no-dev --optimize-autoloader --no-interaction
@@ -195,7 +195,7 @@ php8.4 artisan storage:link
 ## 7. First administrator
 
 ```bash
-cd /var/www/support-app
+cd /usr/share/nginx/html/support-app
 php8.4 artisan support:create-user --role=admin
 ```
 
@@ -214,21 +214,21 @@ Agents and clients are normally added later in the panels.
 The web server (PHP-FPM runs as `www-data`) must be able to write to `storage/` and `bootstrap/cache/`. Ticket attachments are stored in `storage/app/private`:
 
 ```bash
-chown -R www-data:www-data /var/www/support-app
-find /var/www/support-app/storage /var/www/support-app/bootstrap/cache -type d -exec chmod 775 {} \;
+chown -R www-data:www-data /usr/share/nginx/html/support-app
+find /usr/share/nginx/html/support-app/storage /usr/share/nginx/html/support-app/bootstrap/cache -type d -exec chmod 775 {} \;
 ```
 
 Run every later `artisan` command as root, then repeat the `chown` above. Alternatively run artisan as the web user (`sudo -u www-data php8.4 artisan …`), which avoids files owned by root.
 
-### PHP-FPM sandbox (only when you hit a 500 with "read-only file system")
+### PHP-FPM sandbox (required for this install path)
 
-Some setups run php-fpm with systemd `ProtectSystem=full`, which makes `/usr` read-only. That is a problem when the app lives under `/usr/share/nginx/html/…`. Under `/var/www` it does not apply. If you do use such a path, allow writing to the two folders:
+Ubuntu and Debian run php8.4-fpm with systemd `ProtectSystem=full`, which makes everything under `/usr` read-only for PHP. Without this drop-in the site gives a 500 error ("read-only file system"). Allow writing to the two folders Laravel needs:
 
 ```bash
 mkdir -p /etc/systemd/system/php8.4-fpm.service.d
 cat > /etc/systemd/system/php8.4-fpm.service.d/support-app-writable.conf <<'EOF'
 [Service]
-ReadWritePaths=/usr/share/nginx/html/devops/support-app/storage /usr/share/nginx/html/devops/support-app/bootstrap/cache
+ReadWritePaths=/usr/share/nginx/html/support-app/storage /usr/share/nginx/html/support-app/bootstrap/cache
 EOF
 systemctl daemon-reload && systemctl restart php8.4-fpm
 ```
@@ -255,7 +255,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name support.example.be;
-    root /var/www/support-app/public;
+    root /usr/share/nginx/html/support-app/public;
 
     index index.php;
     charset utf-8;
@@ -315,7 +315,7 @@ certbot adds the certificate lines and the HTTP→HTTPS redirect to the nginx co
 
 **Taking over a domain that runs osTicket today:**
 1. Install and test on a temporary domain first.
-2. On the switch-over, change `root` in the existing nginx `server` block of that domain to `/var/www/support-app/public`, and the PHP socket to `php8.4-fpm`.
+2. On the switch-over, change `root` in the existing nginx `server` block of that domain to `/usr/share/nginx/html/support-app/public`, and the PHP socket to `php8.4-fpm`.
 3. Set `APP_URL` in `.env` to the final domain.
 4. Run section 11 again and `systemctl reload nginx`.
 
@@ -326,10 +326,10 @@ Leave the osTicket files and database untouched until you are sure you no longer
 ## 11. Production optimisation
 
 ```bash
-cd /var/www/support-app
+cd /usr/share/nginx/html/support-app
 php8.4 artisan optimize          # config, routes, views, events cache
 php8.4 artisan filament:optimize # Filament component + icon cache
-chown -R www-data:www-data /var/www/support-app
+chown -R www-data:www-data /usr/share/nginx/html/support-app
 systemctl restart php8.4-fpm     # clears OPcache
 ```
 
@@ -379,8 +379,8 @@ On the **new** server, follow sections 1–6 but:
 
 ```bash
 mysql -u support_app -p support_app < /tmp/support.sql
-tar xzf /tmp/support-files.tgz -C /var/www/support-app/storage/app
-cd /var/www/support-app
+tar xzf /tmp/support-files.tgz -C /usr/share/nginx/html/support-app/storage/app
+cd /usr/share/nginx/html/support-app
 php8.4 artisan migrate --force
 php8.4 artisan storage:link
 php8.4 artisan cache:clear
@@ -396,7 +396,7 @@ New releases are published on the `main` branch of https://github.com/Jerlag01/s
 
 Before every update:
 - Back up the database and the attachments before an update (see section 15).
-- See what the update brings: `cd /var/www/support-app && git fetch --tags origin && git log --oneline HEAD..origin/main`.
+- See what the update brings: `cd /usr/share/nginx/html/support-app && git fetch --tags origin && git log --oneline HEAD..origin/main`.
 
 ### 14.1 From the admin panel (recommended)
 
@@ -405,7 +405,7 @@ Open **System update** in the admin panel and click the update button. It needs 
 ### 14.2 By hand
 
 ```bash
-cd /var/www/support-app
+cd /usr/share/nginx/html/support-app
 git rev-parse --short HEAD                      # note the current version, for a rollback
 php8.4 artisan down                             # maintenance page
 git fetch --tags origin
@@ -416,7 +416,7 @@ npm ci && npm run build
 php8.4 artisan vendor:publish --tag=livewire:assets --force
 php8.4 artisan migrate --force
 php8.4 artisan optimize && php8.4 artisan filament:optimize
-chown -R www-data:www-data /var/www/support-app
+chown -R www-data:www-data /usr/share/nginx/html/support-app
 systemctl restart php8.4-fpm                    # clears OPcache
 php8.4 artisan up
 ```
@@ -426,13 +426,13 @@ php8.4 artisan up
 ### 14.3 Going back to the previous version
 
 ```bash
-cd /var/www/support-app
+cd /usr/share/nginx/html/support-app
 php8.4 artisan down
 git checkout <the version noted before the update>
 composer install --no-dev --optimize-autoloader --no-interaction
 npm ci && npm run build
 php8.4 artisan optimize && php8.4 artisan filament:optimize
-chown -R www-data:www-data /var/www/support-app
+chown -R www-data:www-data /usr/share/nginx/html/support-app
 systemctl restart php8.4-fpm
 php8.4 artisan up
 ```
@@ -444,17 +444,17 @@ When the update ran new migrations, restore the database backup as well. Afterwa
 For installs that still come from `JLTechologies/Stock-Rewrite`:
 
 ```bash
-cd /var/www
+cd /usr/share/nginx/html
 php8.4 support-app/artisan down
 git clone https://github.com/Jerlag01/support-app.git support-app-new
 cp support-app/.env support-app-new/.env                                      # keeps APP_KEY and the database settings
 cp -a support-app/storage/app/. support-app-new/storage/app/                  # uploads
 mv support-app support-app-old && mv support-app-new support-app                          # replaces the symlink/folder
 cd support-app
-git config --global --add safe.directory /var/www/support-app
+git config --global --add safe.directory /usr/share/nginx/html/support-app
 ```
 
-Then run section 6 without `key:generate` and without `db:seed`, then sections 8 and 11. The nginx root (`/var/www/support-app/public`) stays the same. When everything works, remove `/var/www/support-app-old`.
+Then run section 6 without `key:generate` and without `db:seed`, then sections 8 and 11. The nginx root (`/usr/share/nginx/html/support-app/public`) stays the same. When everything works, remove `/usr/share/nginx/html/support-app-old`.
 
 ---
 
@@ -514,19 +514,22 @@ The Laravel scheduler, running from cron as `www-data`, performs it. Add this cr
 ```bash
 sudo crontab -u www-data -e
 # add:
-* * * * * cd /var/www/support-app && php8.4 artisan schedule:run >> /dev/null 2>&1
+* * * * * cd /usr/share/nginx/html/support-app && php8.4 artisan schedule:run >> /dev/null 2>&1
 ```
 
 The page reports the scheduler as "Running" once cron works.
 
 `php8.4 artisan app:update` runs these steps:
 1. Refuse if tracked files were changed on the server.
-2. `git fetch`, then `artisan down`, then `git merge --ff-only`.
-3. `composer install` (`--no-dev` in production) and publish the Livewire assets.
-4. `npm ci` / `npm run build` when the frontend changed.
-5. `migrate --force`.
-6. `optimize` + `filament:optimize` in production, or clear the caches in development.
-7. `artisan up`.
+2. Refuse if a file it has to replace is not owned by the owner of the app folder (`www-data`), e.g. a `vendor/` installed as root. This is checked before anything changes; the error lists the files and the `chown` that fixes it.
+3. `git fetch`, then `artisan down`, then `git merge --ff-only`.
+4. `composer install` (`--no-dev` in production) and publish the Livewire assets.
+5. `npm ci` / `npm run build` when the frontend changed.
+6. `migrate --force`.
+7. `optimize` + `filament:optimize` in production, or clear the caches in development.
+8. `artisan up`.
+
+Every `artisan` and `composer` step runs with the PHP from `UPDATER_PHP` (default `php8.4`), whichever PHP started the command. Composer and npm keep their caches in `storage/app/updater/cache`, not in the home folder of `www-data`.
 
 You can also run it by hand:
 
@@ -536,4 +539,8 @@ sudo -u www-data php8.4 artisan app:update           # update now
 ```
 
 Never run it as root: pulled files would become root-owned. If needed, run `chown -R www-data:www-data .` first.
-Optional `.env` keys: `UPDATER_BRANCH`, `UPDATER_REMOTE`, `UPDATER_COMPOSER`, `UPDATER_NPM`.
+Optional `.env` keys:
+- `UPDATER_PHP`: PHP for all update steps, default `php8.4`. It must match the PHP version of the website; the System update page warns when it doesn't.
+- `UPDATER_CACHE_PATH`: home folder and composer/npm caches, default `storage/app/updater/cache`.
+- `UPDATER_SSH_KEY`: deploy key for an SSH remote, e.g. `storage/app/updater/deploy_key` (owned by `www-data`, mode 600).
+- `UPDATER_BRANCH`, `UPDATER_REMOTE`, `UPDATER_COMPOSER`, `UPDATER_NPM`.

@@ -170,4 +170,49 @@ class SystemUpdateTest extends TestCase
         $updater->heartbeat();
         $this->assertTrue($updater->schedulerIsRunning());
     }
+
+    public function test_update_stops_before_changing_anything_when_files_have_another_owner(): void
+    {
+        File::put($this->root.'/seed/README.md', 'v2');
+        $this->commitAndPush($this->root.'/seed', 'Second version');
+        File::ensureDirectoryExists($this->clone.'/vendor/fakerphp');
+        chown($this->clone.'/vendor/fakerphp', fileowner($this->clone) === 33 ? 0 : 33);
+
+        $this->artisan('app:update', ['--allow-root' => true])->assertFailed();
+
+        $run = app(Updater::class)->lastRun();
+        $this->assertSame('failed', $run['status']);
+        $this->assertStringContainsString('vendor: vendor/fakerphp', $run['error']);
+        $this->assertStringContainsString('chown -R', $run['error']);
+        $this->assertSame('First version', app(Updater::class)->commit()['subject'], 'Nothing may be pulled.');
+    }
+
+    public function test_update_refuses_to_start_without_the_configured_php(): void
+    {
+        config(['updater.php' => 'php-that-does-not-exist']);
+        app(Updater::class)->requestUpdate(['user' => 'Admin']);
+
+        $this->artisan('app:update', ['--if-requested' => true, '--allow-root' => true])->assertFailed();
+
+        $this->assertStringContainsString('UPDATER_PHP', app(Updater::class)->lastRun()['error']);
+    }
+
+    public function test_steps_run_with_the_configured_php_and_caches_inside_the_app(): void
+    {
+        $updater = app(Updater::class);
+
+        config(['updater.php' => PHP_BINARY]);
+        $this->assertSame(PHP_BINARY, $updater->php());
+        $this->assertSame(PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION, $updater->phpVersion());
+
+        $environment = $updater->environment();
+        $this->assertSame($this->root.'/state/cache/composer/cache', $environment['COMPOSER_CACHE_DIR']);
+        $this->assertSame($this->root.'/state/cache/home', $environment['HOME']);
+        $this->assertSame($this->root.'/state/cache/npm', $environment['npm_config_cache']);
+        $this->assertArrayNotHasKey('GIT_SSH_COMMAND', $environment);
+
+        config(['updater.cache_path' => '/srv/updater-cache/', 'updater.ssh_key' => 'storage/app/updater/deploy_key']);
+        $this->assertSame('/srv/updater-cache/composer', $updater->environment()['COMPOSER_HOME']);
+        $this->assertStringContainsString($this->clone.'/storage/app/updater/deploy_key', $updater->environment()['GIT_SSH_COMMAND']);
+    }
 }

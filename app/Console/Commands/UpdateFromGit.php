@@ -29,6 +29,12 @@ class UpdateFromGit extends Command
 
     protected string $path;
 
+    /** The PHP binary every step runs with (config updater.php). */
+    protected string $php;
+
+    /** @var array<string, string> */
+    protected array $environment = [];
+
     public function handle(Updater $updater): int
     {
         $this->path = $updater->path();
@@ -49,8 +55,15 @@ class UpdateFromGit extends Command
         if (function_exists('posix_geteuid') && posix_geteuid() === 0 && ! $this->option('allow-root')) {
             $user = function_exists('posix_getpwuid') ? (posix_getpwuid(fileowner($updater->path()))['name'] ?? 'www-data') : 'www-data';
 
-            return $this->failWith($updater, $request, "Do not run the update as root; the files must stay owned by {$user}: sudo -u {$user} ".PHP_BINARY." artisan {$this->getName()}");
+            return $this->failWith($updater, $request, "Do not run the update as root; the files must stay owned by {$user}: sudo -u {$user} ".config('updater.php')." artisan {$this->getName()}");
         }
+
+        if (! $php = $updater->php()) {
+            return $this->failWith($updater, $request, 'PHP binary "'.config('updater.php').'" was not found. Set UPDATER_PHP in .env to the PHP version the website runs on (e.g. php8.4 or /usr/bin/php8.4).');
+        }
+
+        $this->php = $php;
+        $this->environment = $updater->environment();
 
         $lock = Cache::lock('updater.run', 1800);
 
@@ -99,6 +112,18 @@ class UpdateFromGit extends Command
                 throw new RuntimeException("Local changes would be overwritten; commit or discard them first:\n".implode("\n", $changes));
             }
 
+            // Checked before anything changes, so a permission problem never leaves a half-updated site.
+            if ($problems = $updater->ownershipProblems()) {
+                $owner = $updater->owner();
+
+                throw new RuntimeException("These files are not owned by {$owner}, so the update cannot replace them:\n"
+                    .collect($problems)->map(fn (string $file, string $folder): string => "- {$folder}: {$file}")->implode("\n")
+                    ."\nFix it as root, then update again: chown -R {$owner}:{$owner} {$updater->path()}");
+            }
+
+            $updater->prepareCache();
+            $this->log[] = '# PHP '.($updater->phpVersion() ?? '?')." ({$this->php}), started with PHP ".PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'; caches in '.str_replace($this->path.'/', '', $updater->cachePath());
+
             $updater->saveRun($run('running'));
 
             $this->step('Fetching', ['git', 'fetch', '--prune', $remote, $branch], 180);
@@ -116,7 +141,7 @@ class UpdateFromGit extends Command
             $this->line($commits);
             $changed = array_filter(explode("\n", trim($this->step('Changed files', ['git', 'diff', '--name-only', $old, $new], quiet: true))));
 
-            $this->step('Maintenance mode on', [PHP_BINARY, 'artisan', 'down', '--retry=30']);
+            $this->step('Maintenance mode on', [$this->php, 'artisan', 'down', '--retry=30']);
             $maintenance = true;
 
             $this->step('Pulling', ['git', 'merge', '--ff-only', "{$remote}/{$branch}"]);
@@ -124,17 +149,17 @@ class UpdateFromGit extends Command
             $this->runComposer($updater);
             $this->runNpm($updater, $changed);
 
-            $this->step('Migrating the database', [PHP_BINARY, 'artisan', 'migrate', '--force'], 600);
+            $this->step('Migrating the database', [$this->php, 'artisan', 'migrate', '--force'], 600);
 
             if (app()->isProduction()) {
-                $this->step('Building caches', [PHP_BINARY, 'artisan', 'optimize']);
-                $this->step('Building Filament caches', [PHP_BINARY, 'artisan', 'filament:optimize']);
+                $this->step('Building caches', [$this->php, 'artisan', 'optimize']);
+                $this->step('Building Filament caches', [$this->php, 'artisan', 'filament:optimize']);
             } else {
-                $this->step('Clearing caches', [PHP_BINARY, 'artisan', 'optimize:clear']);
-                $this->step('Clearing Filament caches', [PHP_BINARY, 'artisan', 'filament:optimize-clear']);
+                $this->step('Clearing caches', [$this->php, 'artisan', 'optimize:clear']);
+                $this->step('Clearing Filament caches', [$this->php, 'artisan', 'filament:optimize-clear']);
             }
 
-            $this->step('Maintenance mode off', [PHP_BINARY, 'artisan', 'up']);
+            $this->step('Maintenance mode off', [$this->php, 'artisan', 'up']);
             $maintenance = false;
 
             $updater->remoteState(fresh: true);
@@ -145,7 +170,7 @@ class UpdateFromGit extends Command
         } catch (Throwable $exception) {
             if ($maintenance) {
                 // Never leave the website down because a step failed.
-                Process::path($this->path)->run([PHP_BINARY, 'artisan', 'up']);
+                Process::path($this->path)->env($this->environment)->run([$this->php, 'artisan', 'up']);
                 $this->log[] = '$ artisan up (after failure)';
             }
 
@@ -164,6 +189,7 @@ class UpdateFromGit extends Command
         $local = $updater->commit();
 
         $this->line('Branch:  '.($updater->branch() ?? '-'));
+        $this->line('PHP:     '.config('updater.php').' → '.($updater->php() ? $updater->php().' ('.($updater->phpVersion() ?? '?').')' : 'NOT FOUND, set UPDATER_PHP'));
         $this->line('Local:   '.$local['short'].' '.$local['subject'].' ('.$local['date']->format('d/m/Y H:i').')');
 
         if ($remote['error']) {
@@ -178,6 +204,10 @@ class UpdateFromGit extends Command
             $this->warn('Local change: '.$change);
         }
 
+        foreach ($updater->ownershipProblems() as $folder => $file) {
+            $this->warn("Not owned by {$updater->owner()}: {$folder} ({$file})");
+        }
+
         $updater->updateAvailable()
             ? $this->info('An update is available'.(($url = $updater->compareUrl()) ? ": {$url}" : '.'))
             : $this->info('Up to date.');
@@ -189,15 +219,15 @@ class UpdateFromGit extends Command
     {
         $composer = $updater->executable('composer') ?? throw new RuntimeException('composer was not found; set UPDATER_COMPOSER in .env.');
 
-        // Run composer with this PHP version, not whichever "php" comes first in PATH.
-        $command = str_ends_with($composer, '.bat') ? [$composer] : [PHP_BINARY, $composer];
+        // Run composer with the configured PHP, not whichever "php" comes first in PATH.
+        $command = str_ends_with($composer, '.bat') ? [$composer] : [$this->php, $composer];
 
         $this->step('Installing PHP packages', [
             ...$command, 'install', '--no-interaction', '--prefer-dist', '--optimize-autoloader',
             ...(app()->isProduction() ? ['--no-dev'] : []),
         ], 900);
 
-        $this->step('Publishing Livewire assets', [PHP_BINARY, 'artisan', 'vendor:publish', '--tag=livewire:assets', '--force']);
+        $this->step('Publishing Livewire assets', [$this->php, 'artisan', 'vendor:publish', '--tag=livewire:assets', '--force']);
     }
 
     /**
@@ -235,7 +265,7 @@ class UpdateFromGit extends Command
 
         $process = Process::path($this->path)
             ->timeout($timeout)
-            ->env(['GIT_TERMINAL_PROMPT' => '0', 'COMPOSER_NO_INTERACTION' => '1', 'PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin'])
+            ->env($this->environment)
             ->run($command);
 
         $output = trim($process->output()."\n".$process->errorOutput());

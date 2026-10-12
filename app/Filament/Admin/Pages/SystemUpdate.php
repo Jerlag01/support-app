@@ -81,6 +81,7 @@ class SystemUpdate extends Page
                 ->color('gray')
                 ->action(function (): void {
                     $state = $this->updater()->remoteState(fresh: true);
+                    cache()->forget('updater.ownership.'.md5(base_path()));
 
                     Notification::make()
                         ->title(match (true) {
@@ -125,6 +126,11 @@ class SystemUpdate extends Page
         $request = $updater->pendingRequest();
         $run = $updater->lastRun();
         $seen = $updater->schedulerSeenAt();
+        $webPhp = PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
+        $updatePhp = $updater->phpVersion();
+        $phpOk = $updatePhp === $webPhp;
+        // Scanning vendor/ and node_modules/ takes a moment; the "check" action refreshes it.
+        $ownership = cache()->remember('updater.ownership.'.md5(base_path()), now()->addMinutes(5), fn (): array => $updater->ownershipProblems());
         $date = fn (?string $value): string => $value ? Carbon::parse($value)->timezone(config('app.timezone'))->format('d/m/Y H:i:s') : '-';
 
         return $schema
@@ -167,6 +173,19 @@ class SystemUpdate extends Page
                             ->label(__('updater.fields.repository'))
                             ->state($updater->webUrl() ?? $updater->remoteUrl() ?? '-')
                             ->url($updater->webUrl(), shouldOpenInNewTab: true),
+                        TextEntry::make('php')
+                            ->label(__('updater.fields.php'))
+                            ->state(config('updater.php').' · '.($updatePhp ?? __('updater.php_missing')))
+                            ->color($phpOk ? 'success' : 'danger')
+                            ->badge()
+                            ->helperText($phpOk ? null : __('updater.php_mismatch', ['web' => $webPhp, 'update' => $updatePhp ?? '-'])),
+                        TextEntry::make('ownership')
+                            ->label(__('updater.fields.ownership'))
+                            ->state($ownership === [] ? __('updater.ownership_ok', ['user' => $updater->owner()]) : collect($ownership)->map(fn (string $file, string $folder): string => "{$folder}: {$file}")->implode("\n"))
+                            ->color($ownership === [] ? 'success' : 'danger')
+                            ->fontFamily($ownership === [] ? null : FontFamily::Mono)
+                            ->helperText($ownership === [] ? null : __('updater.ownership_help', ['command' => 'chown -R '.$updater->owner().':'.$updater->owner().' '.base_path()]))
+                            ->columnSpan(['md' => 2]),
                         TextEntry::make('local_changes')
                             ->label(__('updater.fields.local_changes'))
                             ->state($changes === [] ? __('updater.no_local_changes') : implode("\n", $changes))
@@ -203,7 +222,7 @@ class SystemUpdate extends Page
                             ->hiddenLabel()
                             ->visible(! $updater->schedulerIsRunning())
                             ->state(new HtmlString(__('updater.scheduler_help', [
-                                'cron' => '<code style="font-family:monospace;padding:2px 4px;border-radius:4px;background:rgba(127,127,127,.15)">* * * * * cd '.e(base_path()).' &amp;&amp; '.e('php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION).' artisan schedule:run &gt;&gt; /dev/null 2&gt;&amp;1</code>',
+                                'cron' => '<code style="font-family:monospace;padding:2px 4px;border-radius:4px;background:rgba(127,127,127,.15)">* * * * * cd '.e(base_path()).' &amp;&amp; '.e((string) config('updater.php')).' artisan schedule:run &gt;&gt; /dev/null 2&gt;&amp;1</code>',
                             ])))
                             ->columnSpanFull(),
                         TextEntry::make('error')

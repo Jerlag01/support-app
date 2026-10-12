@@ -41,7 +41,7 @@ class Updater
     {
         return Process::path($this->path)
             ->timeout($timeout)
-            ->env(['GIT_TERMINAL_PROMPT' => '0', 'LC_ALL' => 'C'])
+            ->env([...$this->environment(), 'LC_ALL' => 'C'])
             ->run(['git', '--no-optional-locks', ...$arguments]);
     }
 
@@ -226,6 +226,129 @@ class Updater
     public function schedulerIsRunning(): bool
     {
         return $this->schedulerSeenAt()?->isAfter(now()->subMinutes(3)) ?? false;
+    }
+
+    /**
+     * The PHP binary every update step runs with (config updater.php, default php8.4).
+     */
+    public function php(): ?string
+    {
+        $php = (string) config('updater.php', 'php8.4');
+
+        if (str_contains($php, '/')) {
+            return is_executable($php) ? $php : null;
+        }
+
+        return (new ExecutableFinder)->find($php, null, ['/usr/local/bin', '/usr/bin', '/bin']);
+    }
+
+    /**
+     * The "major.minor" version of the update PHP, e.g. "8.4", or null when it cannot be run.
+     */
+    public function phpVersion(): ?string
+    {
+        if (! $php = $this->php()) {
+            return null;
+        }
+
+        $result = Process::timeout(10)->run([$php, '-r', 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;']);
+
+        return $result->successful() && preg_match('/^\d+\.\d+$/', trim($result->output())) ? trim($result->output()) : null;
+    }
+
+    /**
+     * Writable folder for the update steps' home and caches (composer, npm).
+     */
+    public function cachePath(): string
+    {
+        $path = config('updater.cache_path');
+
+        return filled($path) ? rtrim($path, '/') : $this->stateDirectory.'/cache';
+    }
+
+    /**
+     * Environment for every process the updater starts. HOME and the composer/npm caches
+     * point into cachePath(), never into the web user's own home folder.
+     *
+     * @return array<string, string>
+     */
+    public function environment(): array
+    {
+        $cache = $this->cachePath();
+        $key = config('updater.ssh_key');
+
+        return array_filter([
+            'HOME' => $cache.'/home',
+            'COMPOSER_HOME' => $cache.'/composer',
+            'COMPOSER_CACHE_DIR' => $cache.'/composer/cache',
+            'COMPOSER_NO_INTERACTION' => '1',
+            'npm_config_cache' => $cache.'/npm',
+            'npm_config_update_notifier' => 'false',
+            'GIT_TERMINAL_PROMPT' => '0',
+            'GIT_SSH_COMMAND' => filled($key) ? 'ssh -i '.escapeshellarg($this->absolute($key)).' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' : null,
+            'PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin',
+        ], fn (?string $value): bool => $value !== null);
+    }
+
+    public function prepareCache(): void
+    {
+        foreach (['home', 'composer/cache', 'npm'] as $directory) {
+            File::ensureDirectoryExists($this->cachePath().'/'.$directory);
+        }
+    }
+
+    /**
+     * The user the files belong to (owner of the installation folder), e.g. www-data.
+     */
+    public function owner(): string
+    {
+        $uid = @fileowner($this->path);
+
+        return $uid !== false && function_exists('posix_getpwuid') ? (posix_getpwuid($uid)['name'] ?? (string) $uid) : 'www-data';
+    }
+
+    /**
+     * Folders an update writes to that contain something not owned by the installation's owner,
+     * each with the first offending file. An update stops before changing anything when this is not empty.
+     *
+     * @return array<string, string>
+     */
+    public function ownershipProblems(): array
+    {
+        $uid = @fileowner($this->path);
+        $problems = [];
+
+        if ($uid === false) {
+            return [$this->path => $this->path];
+        }
+
+        foreach (['.git', 'vendor', 'node_modules', 'public', 'bootstrap/cache', 'storage', 'app', 'config', 'database', 'lang', 'resources', 'routes'] as $folder) {
+            $path = $this->path.'/'.$folder;
+
+            if (! file_exists($path)) {
+                continue;
+            }
+
+            $found = trim(Process::timeout(60)->run(['find', $path, '!', '-uid', (string) $uid, '-print', '-quit'])->output());
+
+            if ($found !== '') {
+                $problems[$folder] = str_replace($this->path.'/', '', $found);
+            }
+        }
+
+        // Files in the root (composer.json, package.json, artisan…) are replaced by git too.
+        $found = trim(Process::timeout(10)->run(['find', $this->path, '-maxdepth', '1', '!', '-uid', (string) $uid, '-print', '-quit'])->output());
+
+        if ($found !== '') {
+            $problems['.'] = str_replace($this->path.'/', '', $found);
+        }
+
+        return $problems;
+    }
+
+    protected function absolute(string $path): string
+    {
+        return str_starts_with($path, '/') ? $path : $this->path.'/'.$path;
     }
 
     /**
